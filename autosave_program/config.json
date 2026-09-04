@@ -1,0 +1,21 @@
+{
+  "watch_paths": ["./watched"],
+  "backup_dir": "./backups",
+  "interval_seconds": 900,
+  "max_versions": 20,
+  "verify_hash": true,
+  "stabilize_delay_seconds": 3,
+  "stabilize_retries": 2,
+  "exclude_patterns": [
+    ".*",
+    "~$*",
+    "*.tmp",
+    "*.temp",
+    "*.partial",
+    "*.crdownload",
+    "*.swp",
+    "*.lock",
+    "Thumbs.db"
+  ],
+  "compound_extensions": [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"]
+}

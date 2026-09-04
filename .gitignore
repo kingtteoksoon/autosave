@@ -1,0 +1,12 @@
+# 런타임 산출물
+autosave_program/state.json
+autosave_program/state.json.corrupt
+autosave_program/logs/*.log
+autosave_program/logs/*.log.*
+autosave_program/backups/
+autosave_program/watched/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

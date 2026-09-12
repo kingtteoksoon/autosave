@@ -34,16 +34,45 @@ def crop_frame(bgr: np.ndarray, coverage: float = 0.04, pad: int = 6) -> tuple[n
         return int(hits[-1]) + 1 if hits.size else 0
 
     rows, cols = frame_like.mean(axis=1), frame_like.mean(axis=0)
-    top = band(rows, int(height * 0.12))
-    bottom = band(rows[::-1], int(height * 0.12))
-    left = band(cols, int(width * 0.12))
-    right = band(cols[::-1], int(width * 0.12))
-    box = dict(top=top, bottom=bottom, left=left, right=right)
-    cropped = bgr[
-        min(top + pad, height // 4) : height - min(bottom + pad, height // 4),
-        min(left + pad, width // 4) : width - min(right + pad, width // 4),
-    ]
-    return np.ascontiguousarray(cropped), box
+    box = dict(top=band(rows, int(height * 0.12)), bottom=band(rows[::-1], int(height * 0.12)),
+               left=band(cols, int(width * 0.12)), right=band(cols[::-1], int(width * 0.12)))
+
+    def clip(value: int, extent: int) -> int:
+        return min(value + pad, extent // 4) if value else 0
+
+    top, bottom = clip(box["top"], height), clip(box["bottom"], height)
+    left, right = clip(box["left"], width), clip(box["right"], width)
+    return np.ascontiguousarray(bgr[top : height - bottom, left : width - right]), box
+
+
+def trim_dark_edges(image: np.ndarray, threshold_ratio: float = 0.2,
+                    max_fraction: float = 0.02) -> tuple[np.ndarray, dict]:
+    """Drop the near-black sliver a frame's inner lip leaves along a border.
+
+    Run *after* tone normalisation, where that sliver collapses to near zero
+    while genuinely dark picture content (a black suit, a vignetted backdrop)
+    stays well above it. Contiguous from the edge and capped at
+    ``max_fraction`` per side, so it can never bite into the photograph.
+    """
+    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = gray.astype(np.float32)
+    height, width = gray.shape
+
+    def scan(profile: np.ndarray, limit: int) -> int:
+        interior = float(np.median(profile[int(len(profile) * 0.2) : int(len(profile) * 0.8)]))
+        cutoff = threshold_ratio * interior
+        band = 0
+        for index in range(limit):
+            if profile[index] >= cutoff:
+                break
+            band = index + 1
+        return band
+
+    rows, cols = gray.mean(axis=1), gray.mean(axis=0)
+    edges = dict(top=scan(rows, int(height * max_fraction)), bottom=scan(rows[::-1], int(height * max_fraction)),
+                 left=scan(cols, int(width * max_fraction)), right=scan(cols[::-1], int(width * max_fraction)))
+    trimmed = image[edges["top"] : height - edges["bottom"], edges["left"] : width - edges["right"]]
+    return np.ascontiguousarray(trimmed), edges
 
 
 MONOCHROME_THRESHOLD = 15.0
@@ -129,5 +158,6 @@ def prepare(bgr: np.ndarray, *, do_crop: bool = True, denoise_strength: int = 5)
         lab = cv2.cvtColor(working, cv2.COLOR_BGR2LAB)
         lab[..., 0] = normalize_tone(denoise(flat_field(lab[..., 0])))
         prepared = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    prepared, report["dark_edges"] = trim_dark_edges(prepared)
     report["size"] = prepared.shape[1::-1]
     return prepared, report

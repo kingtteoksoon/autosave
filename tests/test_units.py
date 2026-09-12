@@ -33,6 +33,16 @@ def test_crop_frame_removes_gold_border() -> None:
     assert preprocess.monochrome_score(cropped) < 5.0
 
 
+def test_trim_dark_edges_spares_picture_content() -> None:
+    image = np.random.randint(60, 200, (400, 300), dtype=np.uint8)
+    image[:6] = 2                                            # frame lip
+    image[-60:] = 45                                         # genuinely dark content
+    trimmed, edges = preprocess.trim_dark_edges(image)
+    assert edges["top"] == 6
+    assert edges["bottom"] == 0                              # dark, but not near-black
+    assert trimmed.shape[0] == 394
+
+
 def test_monochrome_detection() -> None:
     gray = cv2.cvtColor(np.random.randint(0, 255, (64, 64), dtype=np.uint8), cv2.COLOR_GRAY2BGR)
     sepia = cv2.cvtColor(gray, cv2.COLOR_BGR2LAB)
@@ -74,6 +84,12 @@ def test_iou() -> None:
     box = np.array([0, 0, 10, 10], dtype=np.float32)
     assert _iou(box, box) == 1.0
     assert _iou(box, np.array([20, 20, 30, 30], dtype=np.float32)) == 0.0
+
+
+def test_tile_ramp_is_positive_at_the_border() -> None:
+    """A zero-weight edge pixel would come out black after normalisation."""
+    ramp = _ramp(64, 64, 16)
+    assert ramp[0, 0, 0] > 0 and ramp[-1, -1, 0] > 0
 
 
 def test_tile_ramp_partitions_unity() -> None:

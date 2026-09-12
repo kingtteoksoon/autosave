@@ -47,7 +47,10 @@ def _ramp(height: int, width: int, feather: int) -> np.ndarray:
     def profile(length: int) -> np.ndarray:
         window = np.ones(length, dtype=np.float32)
         edge = max(1, min(feather, length // 2))
-        fade = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, edge, dtype=np.float32))
+        # Sample the cosine strictly inside (0, pi): a ramp that reaches exactly
+        # zero leaves the outermost pixel of the image with no weight at all,
+        # which shows up as a black one-pixel border after normalisation.
+        fade = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, edge + 2, dtype=np.float32)[1:-1])
         window[:edge] = fade
         window[-edge:] = fade[::-1]
         return window

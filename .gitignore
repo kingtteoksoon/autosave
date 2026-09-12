@@ -1,0 +1,19 @@
+# Photographs are personal data. This repository is public, so source scans and
+# restored results stay on disk and are never committed.
+input/
+output/
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.webp
+
+# Model weights (~1.5 GB), fetched on first run into ~/.cache/photo_restore
+*.onnx
+models/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

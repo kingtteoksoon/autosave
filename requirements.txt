@@ -1,0 +1,7 @@
+# CPU-only. No PyTorch or CUDA: every model runs through ONNX Runtime.
+numpy>=1.26
+opencv-python-headless>=4.9
+onnxruntime>=1.17
+
+# Tests
+pytest>=8.0

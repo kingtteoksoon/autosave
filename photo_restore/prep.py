@@ -27,6 +27,19 @@ _CHROMA_SCALE = 64.0
 _EDGE_PRESENCE = 0.70
 #: Within a framed side, lines above this coverage are still frame.
 _EDGE_CONTINUATION = 0.50
+#: The border is cropped to this percentile of its per-column depth.
+_EDGE_DEPTH_PERCENTILE = 95.0
+#: A column counts as frame down to the last depth at which this fraction of
+#: the run is still off-chroma.
+_EDGE_RUN_DENSITY = 0.60
+#: Sanity floor on how far apart the two Otsu classes must sit.
+_MIN_CLASS_GAP = 4.0
+#: The frame's soft shadow edge extends a little past the colour step.
+_EDGE_PAD = 6
+#: A border search never grows past this fraction of the image.
+_HARD_CAP_FRACTION = 0.35
+
+_SIDES = ("top", "bottom", "left", "right")
 
 
 def chroma_distance(image: np.ndarray) -> np.ndarray:
@@ -39,25 +52,123 @@ def chroma_distance(image: np.ndarray) -> np.ndarray:
     return np.linalg.norm(chroma - reference, axis=-1)
 
 
-def _edge_bands(distance: np.ndarray, max_fraction: float) -> dict[str, np.ndarray]:
-    """Edge strips, each oriented so that row 0 is the outermost line."""
+def interior_level(distance: np.ndarray) -> float:
+    """How far off-chroma the picture's own content gets, as a reference level.
+
+    Used to read a band that Otsu cannot split: one uniform class is either all
+    frame or all picture, and only a comparison against the picture's own
+    spread says which.
+    """
     height, width = distance.shape
-    row_limit = max(1, int(height * max_fraction))
-    col_limit = max(1, int(width * max_fraction))
-    return {
-        "top": distance[:row_limit],
-        "bottom": distance[::-1][:row_limit],
-        "left": distance[:, :col_limit].T,
-        "right": distance[:, ::-1][:, :col_limit].T,
-    }
+    middle = distance[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4]
+    return float(np.percentile(middle, 95))
 
 
-def _otsu_cutoff(bands: dict[str, np.ndarray]) -> float:
-    """One self-calibrating cutoff separating frame-coloured from picture pixels."""
-    pooled = np.concatenate([band.ravel() for band in bands.values()])
-    quantised = (np.clip(pooled / _CHROMA_SCALE, 0.0, 1.0) * 255).astype(np.uint8)
+def _side_band(distance: np.ndarray, side: str, limit: int) -> np.ndarray:
+    """The edge strip for one side, oriented so row 0 is the outermost line."""
+    if side == "top":
+        return distance[:limit]
+    if side == "bottom":
+        return distance[::-1][:limit]
+    if side == "left":
+        return distance[:, :limit].T
+    if side == "right":
+        return distance[:, ::-1][:, :limit].T
+    raise ValueError(f"unknown side {side!r}")
+
+
+def _side_extent(distance: np.ndarray, side: str) -> int:
+    """How far a band on this side may extend before running out of image."""
+    height, width = distance.shape
+    return height if side in ("top", "bottom") else width
+
+
+def _band_cutoff(band: np.ndarray) -> tuple[float, float]:
+    """Otsu split of one band into frame-coloured and picture pixels.
+
+    The cutoff is computed per side rather than once for the whole border. A
+    strongly coloured frame on one edge otherwise drags the shared threshold
+    above a weaker border elsewhere -- a gilt frame at the top will hide the
+    cloth a print is lying on at the bottom.
+    """
+    quantised = (np.clip(band / _CHROMA_SCALE, 0.0, 1.0) * 255).astype(np.uint8)
     level, _ = cv2.threshold(quantised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return float(level) / 255.0 * _CHROMA_SCALE
+    cutoff = float(level) / 255.0 * _CHROMA_SCALE
+    low, high = band[band <= cutoff], band[band > cutoff]
+    gap = float(high.mean() - low.mean()) if low.size and high.size else 0.0
+    return cutoff, gap
+
+
+def _run_depths(band: np.ndarray, cutoff: float) -> np.ndarray:
+    """Per-column depth of the off-chroma border, measured from the outer edge.
+
+    Density is evaluated over a short sliding window rather than cumulatively
+    from the edge. A cumulative measure keeps a wide border alive well past its
+    real edge -- a border covering 60% of the window still averages 60% -- so
+    the reported depth would depend on how far the search happened to look.
+    A local window makes the measurement scale-free while still tolerating the
+    pale threads and ornament that break a strictly unbroken run.
+    """
+    above = (band > cutoff).astype(np.float32)
+    window = max(9, (band.shape[0] // 20) | 1)
+    local = cv2.blur(above, (1, window), borderType=cv2.BORDER_REPLICATE)
+    dense = local >= _EDGE_RUN_DENSITY
+    reversed_hit = np.argmax(dense[::-1], axis=0)
+    depths = band.shape[0] - reversed_hit
+    return np.where(dense.any(axis=0), depths, 0).astype(np.float32)
+
+
+def _scan_side(
+    distance: np.ndarray, side: str, max_fraction: float, picture_level: float
+) -> int:
+    """Pixels of frame on one side, or 0 if no boundary is found there.
+
+    The search window grows while the off-chroma band still fills it, because a
+    border wider than the initial window would otherwise be cropped to the
+    window rather than to its real edge. A band that never ends, even at the
+    hard cap, is picture content rather than a frame, so nothing is cropped:
+    finding no boundary is a better answer than inventing one.
+
+    The crop itself is taken from a high percentile of the per-column depth
+    rather than from where half the line is still frame. On a border that runs
+    at an angle to the sensor those differ by the whole width of the wedge, and
+    the median leaves a triangle of frame in the picture.
+    """
+    extent = _side_extent(distance, side)
+    limit = max(1, int(extent * max_fraction))
+    cap = max(1, int(extent * _HARD_CAP_FRACTION))
+
+    while True:
+        band = cv2.GaussianBlur(_side_band(distance, side, limit), (0, 0), 2.0)
+        cutoff, gap = _band_cutoff(band)
+
+        inner = band[band <= cutoff]
+        inner_level = float(inner.mean()) if inner.size else float(band.mean())
+        if inner_level > max(picture_level * 1.5, picture_level + 4.0):
+            # Even the quieter of the two classes is far off the picture's own
+            # chroma, so this whole window is still border. Otsu has split the
+            # border internally -- cloth against its woven stripe, frame against
+            # its ornament -- and its cutoff means nothing here.
+            head = tail = 1.0
+        elif gap < _MIN_CLASS_GAP:
+            # One uniform class that is not off-chroma: all picture, no border.
+            return 0
+        else:
+            coverage = (band > cutoff).mean(axis=1)
+            if coverage.size == 0:
+                return 0
+            head, tail = float(coverage[0]), float(coverage[-1])
+
+        if head < _EDGE_PRESENCE:
+            return 0
+        if tail >= _EDGE_CONTINUATION:
+            if limit >= cap:
+                return 0
+            limit = min(limit * 2, cap)
+            continue
+
+        depth = float(np.percentile(_run_depths(band, cutoff), _EDGE_DEPTH_PERCENTILE))
+        return int(min(depth + _EDGE_PAD, band.shape[0]))
 
 
 def detect_frame_border(
@@ -65,22 +176,8 @@ def detect_frame_border(
 ) -> tuple[int, int, int, int]:
     """Pixels of picture frame to trim from each edge, as (top, bottom, left, right)."""
     distance = chroma_distance(image)
-    bands = _edge_bands(distance, max_fraction)
-    cutoff = _otsu_cutoff(bands)
-
-    borders: dict[str, int] = {}
-    for side, band in bands.items():
-        coverage = (band > cutoff).mean(axis=1)
-        if coverage.size == 0 or coverage[0] < _EDGE_PRESENCE:
-            borders[side] = 0
-            continue
-        last = 0
-        for index, value in enumerate(coverage):
-            if value >= _EDGE_CONTINUATION:
-                last = index + 1
-        # The frame's soft shadow edge extends a little past the colour step.
-        borders[side] = min(last + 6, band.shape[0])
-    return borders["top"], borders["bottom"], borders["left"], borders["right"]
+    level = interior_level(distance)
+    return tuple(_scan_side(distance, side, max_fraction, level) for side in _SIDES)
 
 
 def _robust_line(xs: np.ndarray, ys: np.ndarray, samples: int = 4000) -> tuple[float, float]:
@@ -106,11 +203,15 @@ def estimate_tilt(image: np.ndarray, max_fraction: float = 0.10) -> float:
     to trust, so a photograph without a frame is never rotated on noise.
     """
     distance = chroma_distance(image)
-    bands = _edge_bands(distance, max_fraction)
-    cutoff = _otsu_cutoff(bands)
-    band = cv2.GaussianBlur(bands["top"], (0, 0), 2.0)
-    if (band > cutoff).mean(axis=1)[0] < _EDGE_PRESENCE:
+    border = _scan_side(distance, "top", max_fraction, interior_level(distance))
+    if border == 0:
         return 0.0
+
+    # Look a little past the detected border so the boundary itself is inside
+    # the window being measured.
+    window = min(int(border * 1.5) + _EDGE_PAD, distance.shape[0])
+    band = cv2.GaussianBlur(_side_band(distance, "top", window), (0, 0), 2.0)
+    cutoff, _ = _band_cutoff(band)
 
     xs_list: list[float] = []
     ys_list: list[float] = []

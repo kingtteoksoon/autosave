@@ -9,7 +9,7 @@ phone snapshots of framed prints. Runs entirely on CPU.
 
 | Stage | Purpose | Method |
 | --- | --- | --- |
-| prepare | remove the picture frame, correct capture tilt, neutralise the colour cast, denoise | CIELAB chroma segmentation, Theil-Sen edge fit, per-channel percentile balance, non-local means |
+| prepare | remove the picture frame or the surface a print is lying on, correct capture tilt, neutralise the colour cast, denoise | CIELAB chroma segmentation with an adaptive search window, Theil-Sen edge fit, per-channel percentile balance, non-local means |
 | defects | remove dust and scratches | residual-vs-median blobs restricted to locally smooth regions, Telea inpainting |
 | faces | rebuild facial detail lost to blur and print grain | YOLOFace-8n landmarks, FFHQ-512 alignment, CodeFormer or GFPGAN |
 | upscale | raise resolution and recover micro-detail | Real-ESRGAN, tiled with cosine-blended overlaps |
@@ -67,6 +67,28 @@ portraits. The drift is measured from the frame's brightest pixels, which are
 normally near-neutral, and subtracted. Chroma is also rolled off in deep
 shadows, where a coloriser's guesses are least reliable and real photographic
 shadows desaturate anyway.
+
+**The border search grows to fit the border.** A print photographed on a
+table can sit on a wide expanse of cloth, far past the 10% of the frame the
+search starts with. The window doubles while the off-chroma band still fills
+it, and a band that never ends within the hard cap is read as picture content,
+so nothing is cropped. Depth is then taken from a high percentile of the
+per-column border thickness rather than from where half the line is still
+border: on a border running at an angle to the sensor those differ by the whole
+width of the wedge, and a median crop leaves a triangle of cloth in the picture.
+Density along each column is measured over a short sliding window, so a woven
+stripe or a run of pale ornament does not cut the measurement short.
+
+**Dust removal limits itself.** Damage is rare. When the detector flags more
+than 1% of the frame it has caught the print's own grain, so it raises its
+threshold until what remains is plausibly damage. Inpainting grain would smooth
+real texture out of the whole picture; tempering grain is the denoiser's job.
+
+**The white balance correction is capped hard.** The white-patch assumption
+holds when the brightest surface is a white collar and fails when it is a large
+lit backdrop, where it returns a big shift that would drag skin far off
+natural. A small measured tint is worth removing; a large one is evidence the
+assumption does not hold, so the correction can nudge but never dominate.
 
 **CLAHE is off by default.** On a portrait the background is one large smooth
 vignette, and equalising it tile by tile lifts it to mid grey and destroys the

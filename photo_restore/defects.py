@@ -18,8 +18,12 @@ import numpy as np
 from .config import RestoreConfig
 
 
-def detect(image: np.ndarray, config: RestoreConfig) -> np.ndarray:
-    """Binary mask of speck-like defects."""
+def _evidence(image: np.ndarray, config: RestoreConfig) -> tuple[np.ndarray, np.ndarray]:
+    """Per-pixel deviation from the local median, and where the picture is smooth.
+
+    Both are independent of the detection threshold, so they are computed once
+    and reused while the threshold is tuned.
+    """
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     median = cv2.medianBlur(grey, 5).astype(np.float32)
     residual = np.abs(grey.astype(np.float32) - median)
@@ -29,24 +33,42 @@ def detect(image: np.ndarray, config: RestoreConfig) -> np.ndarray:
     # ``<=`` with a floor matters: on a perfectly flat region every local
     # standard deviation is zero, and a strict ``<`` comparison against a zero
     # percentile would mark nothing as smooth and so find no defects at all.
-    threshold = max(float(np.percentile(local_std, config.defect_smooth_percentile)), 1e-6)
-    smooth = local_std <= threshold
+    limit = max(float(np.percentile(local_std, config.defect_smooth_percentile)), 1e-6)
+    return residual, local_std <= limit
 
-    candidates = ((residual > config.defect_threshold) & smooth).astype(np.uint8)
+
+def _mask_from_evidence(
+    residual: np.ndarray, smooth: np.ndarray, config: RestoreConfig, threshold: float
+) -> np.ndarray:
+    """Speck mask at one threshold, filtered by blob size and extent."""
+    candidates = ((residual > threshold) & smooth).astype(np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(candidates, 8)
 
-    height, width = grey.shape[:2]
+    height, width = residual.shape[:2]
     # The floor keeps the size gate meaningful on small images, where the
     # area fraction alone would reject specks of any realistic size.
     max_area = max(25, int(height * width * config.defect_max_area_fraction))
     max_extent = max(12, int(min(height, width) * 0.02))
+
+    keep = [
+        index
+        for index in range(1, count)
+        if 2 <= stats[index, cv2.CC_STAT_AREA] <= max_area
+        and max(stats[index, cv2.CC_STAT_WIDTH], stats[index, cv2.CC_STAT_HEIGHT]) <= max_extent
+    ]
     mask = np.zeros_like(candidates)
-    for index in range(1, count):
-        area = stats[index, cv2.CC_STAT_AREA]
-        extent = max(stats[index, cv2.CC_STAT_WIDTH], stats[index, cv2.CC_STAT_HEIGHT])
-        if 2 <= area <= max_area and extent <= max_extent:
-            mask[labels == index] = 1
+    if keep:
+        mask[np.isin(labels, keep)] = 1
     return mask
+
+
+def detect(
+    image: np.ndarray, config: RestoreConfig, threshold: float | None = None
+) -> np.ndarray:
+    """Binary mask of speck-like defects."""
+    residual, smooth = _evidence(image, config)
+    level = config.defect_threshold if threshold is None else threshold
+    return _mask_from_evidence(residual, smooth, config, level)
 
 
 def repair(image: np.ndarray, config: RestoreConfig) -> tuple[np.ndarray, dict]:
@@ -55,8 +77,21 @@ def repair(image: np.ndarray, config: RestoreConfig) -> tuple[np.ndarray, dict]:
     if not config.remove_defects:
         return image, report
 
-    mask = detect(image, config)
+    # Dust is rare. A detection covering a large share of the frame means the
+    # threshold has caught the print's own grain, so raise it until what is
+    # left is plausibly damage. Inpainting grain would smooth away real texture
+    # across the whole picture, which is the denoiser's job to temper, not
+    # this stage's job to erase.
+    residual, smooth = _evidence(image, config)
+    threshold = config.defect_threshold
+    for _ in range(5):
+        mask = _mask_from_evidence(residual, smooth, config, threshold)
+        if mask.mean() <= config.defect_max_frame_fraction:
+            break
+        threshold *= 1.6
+
     pixels = int(mask.sum())
+    report["defect_threshold"] = round(threshold, 2)
     report["defect_pixels"] = pixels
     report["defect_fraction"] = round(pixels / mask.size, 6)
     if pixels == 0:

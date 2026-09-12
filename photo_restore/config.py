@@ -49,6 +49,7 @@ class RestoreConfig:
     defect_threshold: float = 14.0  # grey levels a speck must stand out by
     defect_smooth_percentile: float = 85.0  # how much of the frame counts as smooth
     defect_max_area_fraction: float = 3e-5  # largest blob still treated as a defect
+    defect_max_frame_fraction: float = 0.01  # of the frame; above this it is grain, not dust
 
     # --- face restoration ---------------------------------------------------
     face_model: str = "codeformer"  # "codeformer" | "gfpgan" | "none"
@@ -69,7 +70,7 @@ class RestoreConfig:
     chroma_refine_radius: float = 0.015  # guided-filter radius as a fraction of width
     white_balance: bool = True  # neutralise a global tint in the predicted chroma
     white_balance_strength: float = 0.8
-    white_balance_limit: float = 14.0  # largest a/b shift the correction may apply
+    white_balance_limit: float = 5.0  # largest a/b shift the correction may apply
     shadow_chroma_floor: float = 0.45  # chroma retained in the deepest shadows
     shadow_chroma_knee: float = 0.45  # lightness fraction above which chroma is untouched
 

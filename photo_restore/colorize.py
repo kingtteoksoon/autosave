@@ -65,6 +65,12 @@ def _chroma_bias(chroma: np.ndarray, lightness: np.ndarray, quantile: float = 0.
     tint rather than the scene's. Colourisers trained on modern photographs
     reliably drift warm or magenta on studio portraits, and this measures that
     drift where it is least confusable with real colour.
+
+    The assumption fails whenever the brightest surface is a large coloured
+    one -- a lit studio backdrop rather than a white collar -- and it fails
+    loudly, returning a big shift that would drag skin far off natural. That is
+    why the caller caps the correction hard: a small measured tint is worth
+    removing, a large one is evidence the assumption does not hold here.
     """
     threshold = np.quantile(lightness, quantile)
     highlights = chroma[lightness >= threshold]

@@ -44,6 +44,44 @@ class TestFrameDetection:
         assert prep.crop_border(image, (10, 5, 4, 6)).shape == (85, 70, 3)
 
 
+class TestWideAndAwkwardBorders:
+    """Borders that defeat a fixed window, a strict run, or a median depth."""
+
+    @staticmethod
+    def _on_cloth(border: int, height: int = 1000, width: int = 600) -> np.ndarray:
+        """A sepia print lying on strongly off-chroma cloth at the top."""
+        image = np.full((height, width, 3), (90, 120, 150), dtype=np.uint8)  # sepia
+        rng = np.random.default_rng(7)
+        image = np.clip(image + rng.normal(0, 3, image.shape), 0, 255).astype(np.uint8)
+        image[:border, :] = (190, 120, 40)  # blue cloth, far from sepia
+        return image
+
+    def test_border_wider_than_the_initial_window_is_found(self) -> None:
+        # 22% of the height, well past the 10% window the search starts from.
+        image = self._on_cloth(border=220, height=1000)
+        top, *_ = prep.detect_frame_border(image, max_fraction=0.10)
+        assert 220 <= top <= 250
+
+    def test_a_striped_border_is_measured_to_its_full_width(self) -> None:
+        image = self._on_cloth(border=150, height=1000)
+        image[:150:12, :] = (245, 245, 245)  # pale woven stripes through the cloth
+        top, *_ = prep.detect_frame_border(image, max_fraction=0.10)
+        assert 150 <= top <= 185
+
+    def test_a_slanted_border_is_cropped_past_its_deepest_point(self) -> None:
+        image = self._on_cloth(border=0, height=1000, width=600)
+        depth = np.linspace(60, 160, 600).astype(int)  # cloth edge runs at an angle
+        for x, limit in enumerate(depth):
+            image[:limit, x] = (190, 120, 40)
+        top, *_ = prep.detect_frame_border(image, max_fraction=0.10)
+        assert top >= 150, "a median-depth crop would leave a wedge of cloth"
+
+    def test_a_border_that_never_ends_is_not_a_border(self) -> None:
+        # Off-chroma all the way down: this is picture content, not a frame.
+        image = self._on_cloth(border=1000, height=1000)
+        assert prep.detect_frame_border(image, max_fraction=0.10) == (0, 0, 0, 0)
+
+
 class TestTilt:
     @pytest.mark.parametrize("angle", [-3.0, -1.5, 1.5, 3.0])
     def test_recovers_a_known_rotation(self, angle: float) -> None:
@@ -152,6 +190,17 @@ class TestDefects:
         repaired, report = defects.repair(image, RestoreConfig())
         assert report["defect_pixels"] > 0
         assert int(repaired[201, 201, 0]) < 140
+
+    def test_grain_raises_the_threshold_instead_of_being_inpainted(self) -> None:
+        rng = np.random.default_rng(11)
+        # A flat field carrying heavy print grain and no actual damage.
+        grain = rng.normal(0, 18, (400, 400)).clip(-90, 90)
+        image = np.clip(90 + grain, 0, 255).astype(np.uint8)
+        image = np.repeat(image[:, :, None], 3, axis=2)
+        config = RestoreConfig()
+        _, report = defects.repair(image, config)
+        assert report["defect_threshold"] > config.defect_threshold
+        assert report["defect_fraction"] <= config.defect_max_frame_fraction
 
     def test_disabled_is_a_pass_through(self) -> None:
         image = np.full((60, 60, 3), 90, dtype=np.uint8)

@@ -47,6 +47,9 @@ def main() -> int:
                         help="skip the mirrored colour pass (faster, slightly less stable colour)")
     parser.add_argument("--denoise", type=int, default=5, help="non-local-means strength (0 disables)")
     parser.add_argument("--no-colorize", action="store_true", help="black-and-white restoration only")
+    parser.add_argument("--force-colorize", action="store_true",
+                        help="re-colourise even when the original already has colour (off by default: "
+                             "predicted colour would overwrite the real one)")
     parser.add_argument("--no-crop", action="store_true", help="keep frame borders")
     parser.add_argument("--outputs", default="bw,color,comparison", help="comma separated: bw,color,comparison")
     args = parser.parse_args()
@@ -64,6 +67,7 @@ def main() -> int:
         face_blend=args.face_blend,
         upscale=args.upscale,
         colorize=not args.no_colorize,
+        force_colorize=args.force_colorize,
         neutralize=args.neutralize,
         flip_tta=not args.no_flip_tta,
         saturation=args.saturation,

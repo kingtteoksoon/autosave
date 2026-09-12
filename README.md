@@ -48,6 +48,7 @@ python restore.py photo.jpg -o restored/ --no-colorize --upscale 4
 | `--saturation` | `0.85` | 채색 채도 |
 | `--no-flip-tta` | off | 좌우 반전 채색 패스 생략(약 16초 단축, 색 안정성 저하) |
 | `--denoise` | `5` | Non-local means 강도 (`0`이면 비활성) |
+| `--force-colorize` | off | 이미 컬러인 원본도 강제로 재채색 |
 | `--no-crop` | off | 액자 테두리 자동 제거 비활성화 |
 
 모델 캐시 위치는 `PHOTO_RESTORE_MODELS` 환경 변수로 지정합니다(기본 `~/.cache/photo-restore`).
@@ -72,6 +73,8 @@ python restore.py photo.jpg -o restored/ --no-colorize --upscale 4
 - **얼굴은 별도 좌표계에서 복원**합니다. 복원 모델은 FFHQ 512 정렬 공간에서 학습되었으므로,
   5점 랜드마크 기반 similarity transform으로 정렬한 뒤 역변환하여 되돌립니다.
 - **합성 시 휘도 통계를 정합**합니다(`_match_luma`). 정합 없이 붙이면 얼굴만 밝기가 달라 패치처럼 보입니다.
+- **이미 컬러인 원본은 채색을 건너뜁니다.** 흑백 판정에서 컬러로 분류되면 추정색이 실제 색을 덮어쓰지 않도록
+  채색 단계를 생략하며, `--force-colorize`로만 강제할 수 있습니다.
 - **채색은 휘도를 건드리지 않습니다.** a/b 채널만 교체하므로 원본 계조가 그대로 유지되며,
   흑백본과 컬러본의 명암이 동일합니다.
 - **크로마는 초해상 *이전* 해상도에서 예측**합니다. 채색 모델은 촬영 해상도의 휘도 통계에 맞춰져 있어,

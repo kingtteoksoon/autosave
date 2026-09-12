@@ -26,7 +26,8 @@ class RestoreOptions:
     face_fidelity: float = 0.85     # CodeFormer w: 1.0 = most faithful to the real face
     face_blend: float = 0.9
     upscale: int = 2                # 1 disables super resolution
-    colorize: bool = True
+    colorize: bool = True          # only applied to monochrome originals, see force_colorize
+    force_colorize: bool = False   # re-colourise a photo that already has colour
     saturation: float = 0.85
     neutralize: float = 0.7   # pulls DDColor's global chroma bias back to neutral
     flip_tta: bool = True     # average the colour prediction with its mirrored pass
@@ -54,7 +55,11 @@ def restore_image(bgr: np.ndarray, options: RestoreOptions | None = None) -> dic
     # Chroma is predicted before super resolution: the colour network is calibrated on
     # camera-resolution luminance, and SR shifts those statistics enough to skew the hues.
     chroma = None
-    if options.colorize:
+    colorize_now = options.colorize and (report.get("is_monochrome") or options.force_colorize)
+    report["colorized"] = bool(colorize_now)
+    if options.colorize and not colorize_now:
+        report["colorize_skipped"] = "original already has colour; pass force_colorize to override"
+    if colorize_now:
         clock = time.time()
         chroma = colorize_module.neutralized_chroma(restored, neutralize=options.neutralize,
                                                    flip_tta=options.flip_tta)
